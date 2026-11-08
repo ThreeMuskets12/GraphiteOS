@@ -1,0 +1,41 @@
+From 8df3d3633e7df7488c9494ff0691bf5e5944b37c Mon Sep 17 00:00:00 2001
+From: ThreeMuskets12 <23061574+ThreeMuskets12@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 17:44:07 -0500
+Subject: [PATCH] GraphiteOS: cap the backlight over adb
+
+debug.eink.maxbrightness (0.05-1, unset = no cap) limits the brightness that
+display manager asks for, as a fraction of the maximum. It takes effect on the
+next brightness change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/surfaceflinger/SurfaceFlinger.cpp | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 28ce461..08bbd43 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -2454,7 +2454,18 @@ status_t SurfaceFlinger::getDisplayBrightnessSupport(const sp<IBinder>& displayT
+ }
+ 
+ status_t SurfaceFlinger::setDisplayBrightness(const sp<IBinder>& displayToken,
+-                                              const gui::DisplayBrightness& brightness) {
++                                              const gui::DisplayBrightness& requestedBrightness) {
++    // GraphiteOS: cap the backlight at debug.eink.maxbrightness (0.05-1, a fraction of the maximum)
++    auto brightness = requestedBrightness;
++    float cap;
++    if (base::ParseFloat(base::GetProperty("debug.eink.maxbrightness", ""), &cap, 0.05f, 1.f) &&
++        !std::isnan(cap) && brightness.displayBrightness > cap) {
++        const float scale = cap / brightness.displayBrightness;
++        brightness.displayBrightness = cap;
++        brightness.sdrWhitePoint *= scale;
++        if (brightness.displayBrightnessNits > 0) brightness.displayBrightnessNits *= scale;
++        if (brightness.sdrWhitePointNits > 0) brightness.sdrWhitePointNits *= scale;
++    }
+     const char* const whence = __func__;
+     SFTRACE_FORMAT("%s %s", whence, brightness.toString().c_str());
+ 
+-- 
+2.50.1 (Apple Git-155)
+
