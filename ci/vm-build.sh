@@ -101,7 +101,7 @@ export BUILD_HOSTNAME=graphiteos BUILD_USERNAME=graphiteos
 set +o nounset # envsetup.sh is not nounset-safe
 source build/envsetup.sh
 quiet yarn yarn --cwd vendor/adevtool/ install
-quiet adevtool adevtool generate-all -d "$DEVICE"
+quiet adevtool vendor/adevtool/bin/run generate-all -d "$DEVICE" # `adevtool` is only an alias
 lunch "$DEVICE-cur-user" > /build/lunch.log 2>&1 || { cat /build/lunch.log; die "lunch failed"; }
 quiet m m vendorbootimage vendorkernelbootimage target-files-package
 quiet otatools m otatools-package
