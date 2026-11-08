@@ -32,7 +32,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       SERVER: graphiteos-build-${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Work out versions
         id: v

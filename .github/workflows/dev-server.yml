@@ -26,7 +26,7 @@ jobs:
     env:
       HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - if: inputs.action == 'start'
         run: |
           read -r id ip < <(ci/hetzner.sh create graphiteos-dev "${{ inputs.server_type }}" "${{ inputs.hours }}" ci/dev_ssh_key.pub)
