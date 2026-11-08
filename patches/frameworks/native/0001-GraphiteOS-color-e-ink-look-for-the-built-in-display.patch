@@ -1,0 +1,385 @@
+From 4cf1d8d145b1c57938d2e27328de3806d6046fa2 Mon Sep 17 00:00:00 2001
+From: ThreeMuskets12 <23061574+ThreeMuskets12@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 23:51:03 -0500
+Subject: [PATCH] GraphiteOS: color e-ink look for the built-in display
+
+The built-in display is fully GPU composited and the composited frame is run through an e-ink
+shader (warm paper tone, desaturated, ~300 colors, 2px ordered dither). A new frame is only shown
+every 1/15 s; frames in between repeat the last filtered frame. SurfaceFlinger still latches,
+releases and presents every frame as normal, so apps see normal frame pacing.
+
+The filter is skipped while photo or camera apps, camera buffers, protected content, or video
+from a calling app are visible. Screenshots, virtual displays and external displays are never
+filtered. adb shell service call SurfaceFlinger 1999 i32 <0|1> turns the filter off or on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../include/renderengine/DisplaySettings.h    |  5 +
+ libs/renderengine/skia/SkiaRenderEngine.cpp   | 94 +++++++++++++++++++
+ libs/renderengine/skia/SkiaRenderEngine.h     |  1 +
+ .../CompositionRefreshArgs.h                  |  5 +
+ .../impl/OutputCompositionState.h             |  4 +
+ .../CompositionEngine/src/Output.cpp          | 19 +++-
+ services/surfaceflinger/SurfaceFlinger.cpp    | 94 +++++++++++++++++++
+ 7 files changed, 220 insertions(+), 2 deletions(-)
+
+diff --git a/libs/renderengine/include/renderengine/DisplaySettings.h b/libs/renderengine/include/renderengine/DisplaySettings.h
+index cc3c900..e8ce17a 100644
+--- a/libs/renderengine/include/renderengine/DisplaySettings.h
++++ b/libs/renderengine/include/renderengine/DisplaySettings.h
+@@ -107,6 +107,11 @@ struct DisplaySettings {
+ 
+     // For now, meaningful primarily when the TonemappingStrategy is Local
+     float targetHdrSdrRatio = 1.f;
++
++    // GraphiteOS: apply the e-ink filter to the composited output. When einkHold is set, the
++    // layers are not drawn and the last filtered frame is shown again instead.
++    bool einkFilter = false;
++    bool einkHold = false;
+ };
+ 
+ static inline bool operator==(const DisplaySettings& lhs, const DisplaySettings& rhs) {
+diff --git a/libs/renderengine/skia/SkiaRenderEngine.cpp b/libs/renderengine/skia/SkiaRenderEngine.cpp
+index c4b5c1f..c1aa3dc 100644
+--- a/libs/renderengine/skia/SkiaRenderEngine.cpp
++++ b/libs/renderengine/skia/SkiaRenderEngine.cpp
+@@ -856,6 +856,86 @@ void logSettings(const T& t) {
+     PrintTo(t, &stream);
+     logEachLineOfString(stream.str());
+ }
++
++// GraphiteOS: color e-ink look. Works in OKLab: compresses tone between ink black and warm paper,
++// desaturates, and bins to 16 tones x 3 chroma rings x 12 hues (~300 colors) with a 2px ordered
++// dither. Tuned with tools/einkfilter.py; keep the two in sync.
++const SkString kEinkSkSL(R"(
++    uniform shader img;
++    float bayer2(float2 a) { a = floor(a); return fract(a.x / 2.0 + a.y * a.y * 0.75); }
++    float bayer8(float2 a) {
++        return (bayer2(0.25 * a) * 0.25 + bayer2(0.5 * a)) * 0.25 + bayer2(a);
++    }
++    float cuberoot(float x) { return sign(x) * pow(abs(x), 1.0 / 3.0); }
++    half4 main(float2 p) {
++        float3 c = float3(toLinearSrgb(img.eval(p).rgb));
++        float l = cuberoot(dot(float3(0.4122214708, 0.5363325363, 0.0514459929), c));
++        float m = cuberoot(dot(float3(0.2119034982, 0.6806995451, 0.1073969566), c));
++        float s = cuberoot(dot(float3(0.0883024619, 0.2817188376, 0.6299787005), c));
++        float L = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
++        float A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
++        float B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
++        float n = bayer8(floor(p / 2.0)) - 0.5 + 1.0 / 128.0;
++        float t = clamp(floor(clamp(L, 0.0, 1.0) * 15.0 + n + 0.5), 0.0, 15.0) / 15.0;
++        float chroma = length(float2(A, B));
++        float k = clamp(floor(clamp(chroma * 0.38 / 0.09, 0.0, 1.0) * 3.0 + n + 0.5), 0.0, 3.0) /
++                3.0 * 0.09;
++        // atan(0, 0) is undefined on GPUs, and the hue doesn't matter for greys anyway
++        float h = chroma > 1e-5 ? floor(atan(B, A) / 6.2831853 * 12.0 + 0.5) / 12.0 * 6.2831853
++                                : 0.0;
++        k *= min(1.0, 2.2 * min(t, 1.0 - t) + 0.25);
++        L = 0.32 + 0.60 * t;
++        A = k * cos(h) + 0.004 * t;
++        B = k * sin(h) + 0.020 * t;
++        l = L + 0.3963377774 * A + 0.2158037573 * B;
++        m = L - 0.1055613458 * A - 0.0638541728 * B;
++        s = L - 0.0894841775 * A - 1.2914855480 * B;
++        l = l * l * l;
++        m = m * m * m;
++        s = s * s * s;
++        c = float3(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
++                   -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
++                   -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s);
++        return half4(fromLinearSrgb(half3(clamp(c, 0.0, 1.0))), 1.0);
++    }
++)");
++
++// GraphiteOS: shows the last filtered frame in dst.
++void drawEinkHeldFrame(const sk_sp<SkSurface>& dst, const sk_sp<SkSurface>& held) {
++    if (sk_sp<SkImage> image = held->makeImageSnapshot()) {
++        SkPaint paint;
++        paint.setBlendMode(SkBlendMode::kSrc);
++        dst->getCanvas()->drawImage(image, 0, 0, SkSamplingOptions(), &paint);
++    }
++}
++
++// GraphiteOS: copies the filtered version of dst into held, then shows held in dst.
++// Does nothing (dst stays unfiltered) if the shader or the offscreen surface is unavailable.
++void applyEinkFilter(const sk_sp<SkSurface>& dst, sk_sp<SkSurface>& held) {
++    static const sk_sp<SkRuntimeEffect> effect = [] {
++        auto [effect, error] = SkRuntimeEffect::MakeForShader(kEinkSkSL);
++        if (!effect) {
++            ALOGE("GraphiteOS: e-ink shader failed to compile: %s", error.c_str());
++        }
++        return effect;
++    }();
++    if (!effect) {
++        return;
++    }
++    if (!held || held->width() != dst->width() || held->height() != dst->height()) {
++        held = dst->makeSurface(dst->imageInfo());
++    }
++    sk_sp<SkImage> composed = dst->makeImageSnapshot();
++    if (!held || !composed) {
++        return;
++    }
++    SkRuntimeEffect::ChildPtr children[] = {composed->makeShader(SkSamplingOptions())};
++    SkPaint paint;
++    paint.setBlendMode(SkBlendMode::kSrc);
++    paint.setShader(effect->makeShader(SkData::MakeEmpty(), children));
++    held->getCanvas()->drawPaint(paint);
++    drawEinkHeldFrame(dst, held);
++}
+ } // namespace
+ 
+ // Helper class intended to be used on the stack to ensure that texture cleanup
+@@ -936,6 +1016,16 @@ void SkiaRenderEngine::drawLayersInternal(
+         return;
+     }
+ 
++    // GraphiteOS: on e-ink hold frames, show the last filtered frame instead of the layers.
++    if (display.einkFilter && display.einkHold && !mInProtectedContext && mEinkSurface &&
++        mEinkSurface->width() == dstSurface->width() &&
++        mEinkSurface->height() == dstSurface->height()) {
++        drawEinkHeldFrame(dstSurface, mEinkSurface);
++        mCapture->endCapture();
++        resultPromise->set_value(sp<Fence>::make(flushAndSubmit(context, dstSurface)));
++        return;
++    }
++
+     static const auto kDisplayColorTransformClamp =
+             FlagManager::getInstance().color_transform_translation() ? SkColorFilters::Clamp::kNo
+                                                                      : SkColorFilters::Clamp::kYes;
+@@ -1633,6 +1723,10 @@ void SkiaRenderEngine::drawLayersInternal(
+ 
+     LOG_THREAD_STATE_AND_CRASH_IF(activeSurface != dstSurface);
+ 
++    if (display.einkFilter && !mInProtectedContext) {
++        applyEinkFilter(dstSurface, mEinkSurface); // GraphiteOS
++    }
++
+     auto drawFence = sp<Fence>::make(flushAndSubmit(context, dstSurface));
+     trace(drawFence);
+     FenceTimePtr fenceTime = FenceTime::makeValid(drawFence);
+diff --git a/libs/renderengine/skia/SkiaRenderEngine.h b/libs/renderengine/skia/SkiaRenderEngine.h
+index 25f3038..e3df704 100644
+--- a/libs/renderengine/skia/SkiaRenderEngine.h
++++ b/libs/renderengine/skia/SkiaRenderEngine.h
+@@ -247,6 +247,7 @@ private:
+ 
+     sp<Fence> mLastDrawFence;
+     BlurFilter* mBlurFilter = nullptr;
++    sk_sp<SkSurface> mEinkSurface; // GraphiteOS: last e-ink frame, used under mRenderingMutex
+ 
+     // Object to capture commands send to Skia.
+     std::unique_ptr<SkiaCapture> mCapture;
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h
+index 27f791f..b6cdba6 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h
+@@ -83,6 +83,11 @@ struct CompositionRefreshArgs {
+     // If a layer is on layer stack specified here, it will client composite.
+     std::unordered_set<ui::LayerStack> forcedClientCompositionLayerStacks;
+ 
++    // GraphiteOS: the output that gets the e-ink filter this frame, and whether this frame only
++    // repeats the last filtered frame.
++    const Output* einkOutput = nullptr;
++    bool einkHold = false;
++
+     // If set, causes the dirty regions to flash with the delay
+     std::optional<std::chrono::microseconds> devOptFlashDirtyRegionsDelay;
+ 
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h
+index c7f6a9c..bc7cce1 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h
+@@ -68,6 +68,10 @@ struct OutputCompositionState {
+     // If true, the current frame reused the buffer from a previous client composition
+     bool reusedClientComposition{false};
+ 
++    // GraphiteOS: e-ink filter state for the current frame (see CompositionRefreshArgs)
++    bool einkFilter{false};
++    bool einkHold{false};
++
+     // The conditions for including a layer on this output
+     LayerFilter layerFilter;
+ 
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index d43679d..c2fab50 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -884,6 +884,14 @@ void Output::updateCompositionState(const compositionengine::CompositionRefreshA
+         return;
+     }
+ 
++    // GraphiteOS: the e-ink output is always GPU composited. A sampled frame is always recomposed,
++    // even if nothing changed since the last held frame.
++    editState().einkFilter = refreshArgs.einkOutput == this;
++    editState().einkHold = getState().einkFilter && refreshArgs.einkHold;
++    if (getState().einkFilter && !getState().einkHold) {
++        dirtyEntireOutput();
++    }
++
+     mLayerRequestingBackgroundBlur = findLayerRequestingBackgroundComposition();
+     bool forceClientComposition = mLayerRequestingBackgroundBlur != nullptr;
+ 
+@@ -893,7 +901,8 @@ void Output::updateCompositionState(const compositionengine::CompositionRefreshA
+         const ui::LayerStack outputLayerStack =
+                 layer->getOutput().getState().layerFilter.layerStack;
+         const bool layerForceClientComposition =
+-                refreshArgs.forcedClientCompositionLayerStacks.contains(outputLayerStack);
++                refreshArgs.forcedClientCompositionLayerStacks.contains(outputLayerStack) ||
++                getState().einkFilter;
+ 
+         layer->updateCompositionState(refreshArgs.updatingGeometryThisFrame,
+                                       layerForceClientComposition || forceClientComposition,
+@@ -1427,9 +1436,13 @@ std::optional<base::unique_fd> Output::composeSurfaces(
+     appendRegionFlashRequests(debugRegion, clientCompositionLayers);
+ 
+     OutputCompositionState& outputCompositionState = editState();
++    // GraphiteOS: e-ink frames don't match their layer requests, so never reuse or cache them.
++    if (mClientCompositionRequestCache && clientCompositionDisplay.einkFilter) {
++        mClientCompositionRequestCache->remove(tex->getBuffer()->getId());
++    }
+     // Check if the client composition requests were rendered into the provided graphic buffer. If
+     // so, we can reuse the buffer and avoid client composition.
+-    if (mClientCompositionRequestCache) {
++    if (mClientCompositionRequestCache && !clientCompositionDisplay.einkFilter) {
+         if (mClientCompositionRequestCache->exists(tex->getBuffer()->getId(),
+                                                    clientCompositionDisplay,
+                                                    clientCompositionLayers)) {
+@@ -1547,6 +1560,8 @@ renderengine::DisplaySettings Output::generateClientCompositionDisplaySettings(
+         clientCompositionDisplay.targetHdrSdrRatio =
+                 getState().displayBrightnessNits / getState().sdrWhitePointNits;
+     }
++    clientCompositionDisplay.einkFilter = outputState.einkFilter; // GraphiteOS
++    clientCompositionDisplay.einkHold = outputState.einkHold;     // GraphiteOS
+     return clientCompositionDisplay;
+ }
+ 
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index c957090..1246ad6 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -412,6 +412,63 @@ void invokeScreenCaptureError(const status_t status,
+     captureListener->onScreenCaptureCompleted(captureResults);
+ }
+ 
++// GraphiteOS: e-ink filter for the built-in display. Main thread only, except sEinkEnabled, which
++// is toggled with: adb shell service call SurfaceFlinger 1999 i32 <0|1>
++std::atomic<bool> sEinkEnabled = true;
++nsecs_t sEinkLastSample = 0;
++nsecs_t sEinkPendingRepaint = 0;
++bool sEinkWasActive = false;
++
++// GraphiteOS: apps shown unfiltered whenever they are on screen (photo and camera apps).
++constexpr std::string_view kEinkBypassApps[] = {
++        "com.google.android.apps.photos", "io.ente.photos", "io.ente.photos.fdroid",
++        "io.ente.photos.independent", "app.alextran.immich", "org.fossify.gallery",
++        "deckers.thibault.aves", "deckers.thibault.aves.libre", "com.amazon.clouddrive.photos",
++        "com.synology.projectkailash", "app.grapheneos.camera", "com.google.android.GoogleCamera",
++        "net.sourceforge.opencamera",
++};
++
++// GraphiteOS: apps shown unfiltered while they show video (a SurfaceView), e.g. in a video call.
++constexpr std::string_view kEinkVideoBypassApps[] = {
++        "com.whatsapp", "com.whatsapp.w4b", "org.thoughtcrime.securesms", "com.facebook.orca",
++        "com.google.android.apps.tachyon", "com.google.android.apps.meetings",
++        "us.zoom.videomeetings", "com.microsoft.teams", "org.telegram.messenger",
++        "com.viber.voip", "org.jitsi.meet", "com.cisco.wx2.android", "com.cisco.webex.meetings",
++        "com.discord", "com.Slack", "com.openbubbles.messaging",
++};
++
++// GraphiteOS: layer names look like "pkg/pkg.Activity#12" or "SurfaceView[pkg/pkg.Activity]#34".
++bool einkLayerIsFromApp(const std::string& name, std::string_view app) {
++    for (size_t i = name.find(app); i != std::string::npos; i = name.find(app, i + 1)) {
++        const size_t end = i + app.size();
++        if ((i == 0 || name[i - 1] == '[') && end < name.size() && name[end] == '/') {
++            return true;
++        }
++    }
++    return false;
++}
++
++// GraphiteOS: whether this visible layer turns the e-ink filter off for its display.
++bool einkBypassLayer(const frontend::LayerSnapshot& snapshot) {
++    if (snapshot.hasProtectedContent ||
++        (snapshot.buffer && (snapshot.buffer->getUsage() & GRALLOC_USAGE_HW_CAMERA_WRITE))) {
++        return true;
++    }
++    for (const auto app : kEinkBypassApps) {
++        if (einkLayerIsFromApp(snapshot.name, app)) {
++            return true;
++        }
++    }
++    if (snapshot.name.find("SurfaceView[") != std::string::npos) {
++        for (const auto app : kEinkVideoBypassApps) {
++            if (einkLayerIsFromApp(snapshot.name, app)) {
++                return true;
++            }
++        }
++    }
++    return false;
++}
++
+ } // namespace
+ 
+ // ---------------------------------------------------------------------------
+@@ -3397,6 +3454,36 @@ CompositeResultsPerDisplay SurfaceFlinger::composite(
+     }
+     setupOutputsForReadback(refreshArgs.outputs);
+ 
++    // GraphiteOS: the built-in display gets the e-ink filter unless a bypass layer is visible on
++    // it. The output only shows a new frame every kEinkPeriod; frames in between repeat it.
++    for (const auto& [_, display] : displays) {
++        if (!display->isPrimary() || !sEinkEnabled) {
++            continue;
++        }
++        const ui::LayerStack layerStack = display->getLayerStack();
++        if (std::none_of(layers.begin(), layers.end(), [layerStack](const auto& layer) {
++                const auto& snapshot = *layer.second->mSnapshot;
++                return snapshot.isVisible && snapshot.outputFilter.layerStack == layerStack &&
++                        einkBypassLayer(snapshot);
++            })) {
++            refreshArgs.einkOutput = display->getCompositionDisplay().get();
++        }
++    }
++    if (refreshArgs.einkOutput) {
++        constexpr nsecs_t kEinkPeriod = 1'000'000'000 / 15;
++        const nsecs_t elapsed = presentTime - sEinkLastSample;
++        refreshArgs.einkHold = sEinkWasActive &&
++                elapsed < kEinkPeriod - refreshArgs.frameInterval.getPeriodNsecs() / 2;
++        if (!refreshArgs.einkHold) {
++            sEinkLastSample = presentTime;
++        } else if (sEinkPendingRepaint != sEinkLastSample) {
++            // Make sure whatever changed during the hold is shown once the next frame is due.
++            sEinkPendingRepaint = sEinkLastSample;
++            forceFutureUpdate(static_cast<int>(ns2ms(kEinkPeriod - elapsed)) + 1);
++        }
++    }
++    sEinkWasActive = refreshArgs.einkOutput != nullptr;
++
+     std::vector<std::pair<Layer*, LayerFE*>> offloadedLayers;
+     if (optionalOffloadedRefreshArgs) {
+         offloadedLayers =
+@@ -7507,6 +7594,9 @@ status_t SurfaceFlinger::CheckTransactCodeCredentials(uint32_t code) {
+         code == IBinder::SYSPROPS_TRANSACTION) {
+         return OK;
+     }
++    if (code == 1999) { // GraphiteOS: e-ink toggle, caller is checked in onTransact
++        return OK;
++    }
+     // Numbers from 1000 to 1047 are currently used for backdoors. The code
+     // in onTransact verifies that the user is root, and has access to use SF.
+     if (code >= 1000 && code <= 1047) {
+@@ -7556,6 +7646,10 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
+             }
+             case 1007: // Unused.
+                 return NAME_NOT_FOUND;
++            case 1999: // GraphiteOS: e-ink filter on (1) or off (0).
++                sEinkEnabled = data.readInt32() != 0;
++                scheduleRepaint();
++                return NO_ERROR;
+             case 1008: // Toggle forced GPU composition.
+                 sfdo_forceClientComposition(data.readInt32() != 0);
+                 return NO_ERROR;
+-- 
+2.50.1 (Apple Git-155)
+

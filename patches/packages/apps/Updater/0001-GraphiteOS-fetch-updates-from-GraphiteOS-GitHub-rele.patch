@@ -1,0 +1,25 @@
+From 930189ce044e44097abc53e1c0f9c036a9ff5062 Mon Sep 17 00:00:00 2001
+From: ThreeMuskets12 <23061574+ThreeMuskets12@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 23:50:16 -0500
+Subject: [PATCH] GraphiteOS: fetch updates from GraphiteOS GitHub releases
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ res/values/config.xml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/res/values/config.xml b/res/values/config.xml
+index b3804bb..32f1f01 100644
+--- a/res/values/config.xml
++++ b/res/values/config.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="url" translatable="false">https://releases.grapheneos.org/</string>
++    <string name="url" translatable="false">https://github.com/ThreeMuskets12/GraphiteOS/releases/latest/download/</string>
+     <string name="channel_default" translatable="false">stable</string>
+     <string name="network_type_default" translatable="false">1</string>
+     <string name="battery_not_low_default" translatable="false">true</string>
+-- 
+2.50.1 (Apple Git-155)
+
