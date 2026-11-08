@@ -2,6 +2,10 @@ name: Release
 
 # Builds, signs and publishes a GraphiteOS release on a temporary Hetzner server.
 # Started by watch-upstream.yml, or by hand.
+#
+# The build can take longer than one GitHub job (6 h max), so it runs detached on the server:
+# `build` starts it and follows it for up to ~5.5 h, `finish` follows the rest, downloads the
+# release files and publishes them, and `cleanup` always deletes the server.
 
 on:
   workflow_dispatch:
@@ -20,18 +24,28 @@ concurrency:
   group: release
 
 permissions:
+  actions: write
   contents: write
   issues: write
 
+env:
+  GH_REPO: ${{ github.repository }}
+  SERVER: graphiteos-build-${{ github.run_id }}
+
 jobs:
-  release:
+  build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 355
+    timeout-minutes: 350
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      build_number: ${{ steps.v.outputs.build_number }}
+      verdict: ${{ steps.review.outputs.verdict }}
+      ip: ${{ steps.server.outputs.ip }}
     env:
-      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
-      SERVER: graphiteos-build-${{ github.run_id }}
     steps:
+      - run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v5
 
       - name: Work out versions
@@ -45,13 +59,13 @@ jobs:
         run: ci/preflight.sh "${{ steps.v.outputs.tag }}" "${{ steps.v.outputs.prev_tag }}"
 
       - name: AI review
+        id: review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           python3 -m venv work/venv && work/venv/bin/pip install --quiet anthropic
           work/venv/bin/python ci/ai-review.py work/review | tee work/verdict.json
           echo "verdict=$(jq -r .verdict work/verdict.json)" >> "$GITHUB_OUTPUT"
-        id: review
 
       - name: Create draft release
         run: |
@@ -72,47 +86,103 @@ jobs:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
         run: |
           ssh-keygen -q -t ed25519 -N "" -f work/id_ed25519
-          read -r id ip < <(ci/hetzner.sh create "$SERVER" "${{ inputs.server_type || 'ccx43' }}" 7 work/id_ed25519.pub)
+          read -r _ ip < <(ci/hetzner.sh create "$SERVER" "${{ inputs.server_type || 'ccx43' }}" 14 work/id_ed25519.pub)
           echo "ip=$ip" >> "$GITHUB_OUTPUT"
 
-      - name: Build
+      - name: Start build
         env:
           TAG: ${{ steps.v.outputs.tag }}
           BUILD_NUMBER: ${{ steps.v.outputs.build_number }}
           PREV_TIMESTAMP: ${{ steps.v.outputs.prev_timestamp }}
-          REPO: ${{ github.repository }}
           SIGNING_KEYS_TGZ_B64: ${{ secrets.SIGNING_KEYS_TGZ_B64 }}
           SIGNING_KEYS_PASSPHRASE: ${{ secrets.SIGNING_KEYS_PASSPHRASE }}
-        run: ci/remote-build.sh "${{ steps.server.outputs.ip }}" work/id_ed25519
+        run: ci/remote-build.sh start "${{ steps.server.outputs.ip }}" work/id_ed25519
 
+      # The SSH key goes to the next job encrypted, since artifacts of a public repository are public.
+      - name: Hand the server over to the next job
+        env:
+          PASSPHRASE: ${{ secrets.SIGNING_KEYS_PASSPHRASE }}
+        run: openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -pass env:PASSPHRASE -in work/id_ed25519 -out work/id_ed25519.enc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-key
+          path: work/id_ed25519.enc
+          retention-days: 1
+
+      - name: Follow the build
+        run: |
+          code=0
+          ci/remote-build.sh wait "${{ steps.server.outputs.ip }}" work/id_ed25519 $((JOB_START + 330 * 60)) || code=$?
+          [[ $code == 0 || $code == 100 ]]
+
+  finish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_NUMBER: ${{ needs.build.outputs.build_number }}
+      IP: ${{ needs.build.outputs.ip }}
+    steps:
+      - run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-key
+          path: work
+      - env:
+          PASSPHRASE: ${{ secrets.SIGNING_KEYS_PASSPHRASE }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:PASSPHRASE -in work/id_ed25519.enc -out work/id_ed25519
+          chmod 600 work/id_ed25519
+
+      - name: Follow the build
+        run: ci/remote-build.sh wait "$IP" work/id_ed25519 $((JOB_START + 300 * 60))
+
+      - name: Upload release files
+        run: |
+          ci/remote-build.sh fetch "$IP" work/id_ed25519 work/upload
+          ls -la work/upload
+          gh release upload "$BUILD_NUMBER" --clobber work/upload/*
+
+      - name: Publish
+        if: needs.build.outputs.verdict == 'ok'
+        run: gh release edit "$BUILD_NUMBER" --draft=false --latest
+
+      - name: Ask for a human review
+        if: needs.build.outputs.verdict != 'ok'
+        run: |
+          gh release view "$BUILD_NUMBER" --json body --jq .body > work/notes.md
+          printf '%s\n\n%s\n\n%s\n' \
+            "The AI review raised a concern, so the release was built but left as a draft." \
+            "$(sed -n 's/^AI review[^:]*: //p' work/notes.md)" \
+            "Publish it from the Releases page once checked. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            > work/issue.md
+          gh issue create --title "Release $BUILD_NUMBER is waiting for review" --body-file work/issue.md
+
+  cleanup:
+    needs: [build, finish]
+    if: always()
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_NUMBER: ${{ needs.build.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v5
       - name: Delete build server
-        if: always()
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
         run: ci/hetzner.sh delete "$SERVER"
-
-      - name: Publish
-        if: steps.review.outputs.verdict == 'ok'
-        run: gh release edit "${{ steps.v.outputs.build_number }}" --draft=false --latest
-
-      - name: Ask for a human review
-        if: steps.review.outputs.verdict != 'ok'
+      - name: Delete the server key artifact
         run: |
-          printf '%s\n\n%s\n\n%s\n' \
-            "The AI review raised a concern, so the release was built but left as a draft:" \
-            "$(jq -r .summary work/verdict.json)" \
-            "Publish it from the Releases page once checked. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            > work/issue.md
-          gh issue create --title "Release ${{ steps.v.outputs.build_number }} is waiting for review" \
-            --body-file work/issue.md
-
+          gh api "repos/$GH_REPO/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name == "server-key") | .id' |
+            xargs -r -I{} gh api -X DELETE "repos/$GH_REPO/actions/artifacts/{}"
       - name: Report failure
-        if: failure()
-        env:
-          BUILD_NUMBER: ${{ steps.v.outputs.build_number }}
+        if: needs.build.result != 'success' || needs.finish.result != 'success'
         run: |
           if [[ -n $BUILD_NUMBER && $(gh release view "$BUILD_NUMBER" --json isDraft --jq .isDraft 2>/dev/null) == true ]]; then
             gh release delete "$BUILD_NUMBER" --yes
           fi
-          gh issue create --title "Release build failed (GrapheneOS ${{ steps.v.outputs.tag }})" \
+          gh issue create --title "Release build failed (GrapheneOS ${{ needs.build.outputs.tag }})" \
             --body "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

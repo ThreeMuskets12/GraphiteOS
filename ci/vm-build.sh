@@ -1,10 +1,10 @@
 #!/bin/bash
 # Runs on the build VM as root (started by ci/remote-build.sh).
 # Installs dependencies, syncs and verifies the GrapheneOS tag, applies the GraphiteOS patches,
-# builds and signs a release, checks it, and uploads it to the draft GitHub release.
+# builds and signs a release, checks it, and stages the release files in /build/upload.
 #
 # Inputs: /build/graphiteos (this repo, with preflight output in work/), and in /dev/shm/graphite:
-#   env (TAG, BUILD_NUMBER, PREV_TIMESTAMP, REPO, GH_TOKEN), keys.b64, passphrase
+#   env (TAG, BUILD_NUMBER, PREV_TIMESTAMP), keys.b64, passphrase
 
 set -o errexit -o nounset -o pipefail
 
@@ -25,7 +25,7 @@ if [[ ${1:-} != --as-build ]]; then
     export DEBIAN_FRONTEND=noninteractive
     quiet apt apt-get update
     quiet apt apt-get install -y repo git gnupg openssh-client python3 diffutils fontconfig \
-        fonts-dejavu-core openssl rsync unzip zip curl jq gh xz-utils
+        fonts-dejavu-core openssl rsync unzip zip curl jq xz-utils
     node_dist=https://nodejs.org/dist/latest-v24.x
     node_tar=$(curl -fsS "$node_dist/SHASUMS256.txt" | grep -o 'node-v[0-9.]*-linux-x64\.tar\.xz' | head -n 1)
     curl -fsS "$node_dist/$node_tar" -o "/tmp/$node_tar"
@@ -39,16 +39,15 @@ if [[ ${1:-} != --as-build ]]; then
     chown -R build: "$SECRETS"
     runuser -u build -- bash "$0" --as-build
 
-    log "uploading release assets"
+    log "staging release files in /build/upload"
     out="$SRC/releases/$BUILD_NUMBER/release-$DEVICE-$BUILD_NUMBER"
+    mkdir -p /build/upload
     cd "$out"
     install_zip="$DEVICE-install-$BUILD_NUMBER.zip"
-    sha256sum "$DEVICE-ota_update-$BUILD_NUMBER.zip" "$install_zip" > SHA256SUMS
+    sha256sum "$DEVICE-ota_update-$BUILD_NUMBER.zip" "$install_zip" > /build/upload/SHA256SUMS
+    cp "$DEVICE-ota_update-$BUILD_NUMBER.zip" "$DEVICE"-{stable,beta,alpha,testing} /build/upload/
     # GitHub release files are limited to 2 GiB; the install zip is only needed for the first flash
-    split -b 1900M -d -a 1 "$install_zip" "$install_zip.part"
-    GH_TOKEN=$GH_TOKEN gh release upload "$BUILD_NUMBER" --repo "$REPO" --clobber \
-        "$DEVICE-ota_update-$BUILD_NUMBER.zip" "$DEVICE"-{stable,beta,alpha,testing} \
-        "$install_zip".part* SHA256SUMS
+    split -b 1900M -d -a 1 "$install_zip" "/build/upload/$install_zip.part"
     log "done"
     exit 0
 fi
