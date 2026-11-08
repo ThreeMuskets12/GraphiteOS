@@ -38,14 +38,16 @@ create)
         body=$(jq -n --arg n "$name" --arg t "$type" --arg i "$IMAGE" --arg loc "$location" \
             --argjson k "$key_id" --argjson l "$labels" \
             '{name: $n, server_type: $t, image: $i, location: $loc, ssh_keys: [$k], labels: $l}')
-        if out=$(api POST /servers "$body" 2>/dev/null); then
+        out=$(curl -sS -X POST -H "Authorization: Bearer $HCLOUD_TOKEN" \
+            -H "Content-Type: application/json" --data "$body" "$API/servers")
+        if [[ $(jq -r '.server.id // empty' <<<"$out") ]]; then
             id=$(jq -r .server.id <<<"$out")
             ip=$(jq -r .server.public_net.ipv4.ip <<<"$out")
             echo "created $type in $location" >&2
             echo "$id $ip"
             exit 0
         fi
-        echo "$type unavailable in $location" >&2
+        echo "$type not created in $location: $(jq -r '.error.message // .' <<<"$out")" >&2
     done
     api DELETE "/ssh_keys/$key_id" >/dev/null
     echo "could not create $type in any location" >&2
