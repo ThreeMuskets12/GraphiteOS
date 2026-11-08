@@ -1,0 +1,86 @@
+From dc827e5555949c7ea8039d3535ba06894ad82929 Mon Sep 17 00:00:00 2001
+From: ThreeMuskets12 <23061574+ThreeMuskets12@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 17:43:02 -0500
+Subject: [PATCH] GraphiteOS: allow pinning Private Space apps to the home
+ screen
+
+Upstream marks Private Space apps and shortcuts as not pinnable. Allow it. While
+Private Space is locked the pinned icons are greyed out like work apps; tapping
+one asks to unlock Private Space instead of showing the work profile dialog.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/com/android/launcher3/model/data/AppInfo.java         | 7 ++-----
+ .../android/launcher3/model/data/WorkspaceItemInfo.java   | 4 ----
+ src/com/android/launcher3/touch/ItemClickHandler.java     | 8 ++++++++
+ 3 files changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/src/com/android/launcher3/model/data/AppInfo.java b/src/com/android/launcher3/model/data/AppInfo.java
+index f98491a..8188b35 100644
+--- a/src/com/android/launcher3/model/data/AppInfo.java
++++ b/src/com/android/launcher3/model/data/AppInfo.java
+@@ -206,11 +206,8 @@ public class AppInfo extends ItemInfoWithIcon implements WorkspaceItemFactory {
+ 
+         info.runtimeStatusFlags |= appInfo.isSystem() ? FLAG_SYSTEM_YES : FLAG_SYSTEM_NO;
+ 
+-        if (userIconInfo.isPrivate()) {
+-            info.runtimeStatusFlags |= FLAG_NOT_PINNABLE;
+-        } else {
+-            info.runtimeStatusFlags &= ~FLAG_NOT_PINNABLE;
+-        }
++        // GraphiteOS: Private Space apps can be pinned to the home screen
++        info.runtimeStatusFlags &= ~FLAG_NOT_PINNABLE;
+ 
+         if (android.security.Flags.appLockApis()) {
+             if (appInfo.isAppLockSupported()) {
+diff --git a/src/com/android/launcher3/model/data/WorkspaceItemInfo.java b/src/com/android/launcher3/model/data/WorkspaceItemInfo.java
+index 03acc3c..cd999a5 100644
+--- a/src/com/android/launcher3/model/data/WorkspaceItemInfo.java
++++ b/src/com/android/launcher3/model/data/WorkspaceItemInfo.java
+@@ -33,7 +33,6 @@ import com.android.launcher3.LauncherSettings.Favorites;
+ import com.android.launcher3.Utilities;
+ import com.android.launcher3.icons.BitmapInfo;
+ import com.android.launcher3.icons.IconCache;
+-import com.android.launcher3.pm.UserCache;
+ import com.android.launcher3.shortcuts.ShortcutKey;
+ import com.android.launcher3.util.ApiWrapper;
+ import com.android.launcher3.util.ContentWriter;
+@@ -134,9 +133,6 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
+     public WorkspaceItemInfo(ShortcutInfo shortcutInfo, Context context) {
+         user = shortcutInfo.getUserHandle();
+         itemType = Favorites.ITEM_TYPE_DEEP_SHORTCUT;
+-        if (UserCache.INSTANCE.get(context).getUserInfo(user).isPrivate()) {
+-            runtimeStatusFlags |= FLAG_NOT_PINNABLE;
+-         }
+         updateFromDeepShortcutInfo(shortcutInfo, context);
+     }
+ 
+diff --git a/src/com/android/launcher3/touch/ItemClickHandler.java b/src/com/android/launcher3/touch/ItemClickHandler.java
+index 32f11b1..3fd15d8 100644
+--- a/src/com/android/launcher3/touch/ItemClickHandler.java
++++ b/src/com/android/launcher3/touch/ItemClickHandler.java
+@@ -62,6 +62,7 @@ import com.android.launcher3.model.data.ItemInfoWithIcon;
+ import com.android.launcher3.model.data.LauncherAppWidgetInfo;
+ import com.android.launcher3.model.data.WorkspaceItemInfo;
+ import com.android.launcher3.pm.InstallSessionHelper;
++import com.android.launcher3.pm.UserCache;
+ import com.android.launcher3.shortcuts.ShortcutKey;
+ import com.android.launcher3.testing.TestLogging;
+ import com.android.launcher3.testing.shared.TestProtocol;
+@@ -359,6 +360,13 @@ public class ItemClickHandler {
+      * @param v The view that was clicked. Must be a tagged with a {@link WorkspaceItemInfo}.
+      */
+     public static void onClickAppShortcut(View v, WorkspaceItemInfo shortcut, Launcher launcher) {
++        // GraphiteOS: a pinned app of a locked Private Space asks to unlock it like All Apps does,
++        // instead of the framework's "work apps are paused" dialog
++        if ((shortcut.runtimeStatusFlags & ItemInfoWithIcon.FLAG_DISABLED_QUIET_USER) != 0
++                && UserCache.INSTANCE.get(launcher).getUserInfo(shortcut.user).isPrivate()) {
++            launcher.getAppsView().getPrivateProfileManager().setQuietMode(false);
++            return;
++        }
+         if (shortcut.isDisabled() && handleDisabledItemClicked(shortcut, launcher)) {
+             return;
+         }
+-- 
+2.50.1 (Apple Git-155)
+
