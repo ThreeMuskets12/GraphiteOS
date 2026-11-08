@@ -46,9 +46,10 @@ jobs:
 
       - name: AI review
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python3 ci/ai-review.py work/review | tee work/verdict.json
+          python3 -m venv work/venv && work/venv/bin/pip install --quiet anthropic
+          work/venv/bin/python ci/ai-review.py work/review | tee work/verdict.json
           echo "verdict=$(jq -r .verdict work/verdict.json)" >> "$GITHUB_OUTPUT"
         id: review
 

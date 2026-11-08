@@ -1,16 +1,16 @@
-"""Asks Claude (via OpenRouter) whether upstream changes could break the GraphiteOS patches.
+"""Asks Claude whether upstream changes could break the GraphiteOS patches.
 
-Usage: python3 ci/ai-review.py work/review > work/verdict.json
+Usage: ANTHROPIC_API_KEY=... python3 ci/ai-review.py work/review > work/verdict.json
 Prints {"verdict": "ok" | "concern", "summary": "..."}. Any failure gives "concern", so a broken
 review never publishes a release on its own.
 """
 import json
-import os
 import pathlib
 import sys
-import urllib.request
 
-MODEL = "anthropic/claude-opus-5.5"
+import anthropic
+
+MODEL = "claude-opus-5-5"
 MAX_CHARS = 600_000
 
 PROMPT = """You are reviewing an automated release of GraphiteOS, a minimal fork of GrapheneOS for the
@@ -28,33 +28,40 @@ re-purposed functions/fields we rely on, composition flow changes that bypass ou
 client composition caching, protected content, screenshot paths, display identification, frame
 scheduling, or Updater URL handling. Ignore style.
 
-Answer with only a JSON object: {"verdict": "ok" or "concern", "summary": "<= 5 sentences"}.
-Use "concern" only for a real risk that a human should look at before phones install this build.
+Give verdict "concern" only for a real risk that a human should look at before phones install this
+build, otherwise "ok". Keep the summary to 5 sentences or fewer.
 """
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["ok", "concern"]},
+        "summary": {"type": "string"},
+    },
+    "required": ["verdict", "summary"],
+    "additionalProperties": False,
+}
 
 
 def review(review_dir):
-    parts = []
-    for path in sorted(pathlib.Path(review_dir).glob("*.diff")):
-        parts.append(f"===== {path.name} =====\n{path.read_text(errors='replace')}")
+    parts = [f"===== {p.name} =====\n{p.read_text(errors='replace')}"
+             for p in sorted(pathlib.Path(review_dir).glob("*.diff"))]
     material = "\n\n".join(parts)
     if len(material) > MAX_CHARS:
         return {"verdict": "concern", "summary": f"Diff too large to review automatically ({len(material)} chars)."}
-    request = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=json.dumps({
-            "model": MODEL,
-            "messages": [{"role": "user", "content": PROMPT + "\n\n" + material}],
-            "max_tokens": 2000,
-        }).encode(),
-        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}", "Content-Type": "application/json"},
+
+    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+    response = client.beta.messages.create(
+        model=MODEL,
+        max_tokens=16000,
+        betas=["server-side-fallback-2026-07-01"],
+        extra_body={"fallbacks": "default"},  # re-run on another model if a safety classifier declines
+        output_config={"effort": "high", "format": {"type": "json_schema", "schema": SCHEMA}},
+        messages=[{"role": "user", "content": PROMPT + "\n\n" + material}],
     )
-    with urllib.request.urlopen(request, timeout=600) as response:
-        text = json.load(response)["choices"][0]["message"]["content"]
-    result = json.loads(text[text.index("{"):text.rindex("}") + 1])
-    if result.get("verdict") not in ("ok", "concern"):
-        raise ValueError(f"unexpected verdict: {result!r}")
-    return {"verdict": result["verdict"], "summary": str(result.get("summary", ""))}
+    if response.stop_reason != "end_turn":
+        return {"verdict": "concern", "summary": f"AI review did not finish (stop_reason: {response.stop_reason})."}
+    return json.loads(next(b.text for b in response.content if b.type == "text"))
 
 
 if __name__ == "__main__":
