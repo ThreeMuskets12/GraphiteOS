@@ -79,6 +79,12 @@ log "applying GraphiteOS patches"
     git -C "$project" am "$GRAPHITE/work/patches/$project"/*.patch || die "patch failed in $project"
 done
 
+log "applying GraphiteOS file replacements"
+(cd "$GRAPHITE/overlay" && find . -type f) | while read -r file; do
+    [[ -f $file ]] || die "$file no longer exists upstream, so its replacement would be ignored"
+    cp "$GRAPHITE/overlay/$file" "$file"
+done
+
 log "setting up signing keys"
 mkdir -p "keys/$DEVICE"
 base64 -d "$SECRETS/keys.b64" | tar -xz -C "keys/$DEVICE"
@@ -100,6 +106,8 @@ lunch "$DEVICE-cur-user" > /build/lunch.log 2>&1 || { cat /build/lunch.log; die 
 quiet m m vendorbootimage vendorkernelbootimage target-files-package
 quiet otatools m otatools-package
 set -o nounset
+cmp "$OUT/product/media/bootanimation.zip" "$GRAPHITE/overlay/branding/bootanimation/1280.zip" ||
+    die "the build didn't pick up the GraphiteOS boot animation"
 
 log "signing"
 quiet finalize script/finalize.sh

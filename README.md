@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/github/readme-banner-dark.png">
+  <img alt="GraphiteOS — a GrapheneOS fork that looks like color e-paper" src="assets/github/readme-banner-light.png">
+</picture>
+
 # GraphiteOS
 
 A minimal-diff fork of [GrapheneOS](https://grapheneos.org) for the Pixel 9 Pro (`caiman`).
@@ -25,6 +30,8 @@ External displays (casting, Android Auto, wired monitors) and screenshots are ne
 |---|---|
 | `patches/frameworks/native/` | The filter. It lives in SurfaceFlinger and RenderEngine; the bypass app lists are in `SurfaceFlinger.cpp`. |
 | `patches/packages/apps/Updater/` | Points the stock Updater at this repo's GitHub releases. |
+| `overlay/` | Files that replace upstream files as-is. Currently only the GraphiteOS boot animation (`branding/bootanimation/1280.zip`, the Pixel 9 Pro size). |
+| `assets/` | Brand kit: logos, vector masters, GitHub banners, and the boot animation sources. |
 | `tools/einkfilter.py` | Previews the filter on an image using the same math as the shader. |
 | `certs/caiman/` | Public signing certificates and the AVB key (`avb_pkmd.bin`). |
 | `scripts/generate-keys.sh` | One-time signing key generation. |
