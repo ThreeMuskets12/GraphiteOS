@@ -1,0 +1,35 @@
+name: Dev server
+
+# Starts or stops an interactive build server for patch development. It gets the SSH key in
+# ci/dev_ssh_key.pub, never the signing keys, and is deleted automatically after `hours`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [start, stop]
+        default: start
+      hours:
+        description: Delete automatically after this many hours
+        default: "6"
+      server_type:
+        description: Hetzner server type
+        default: ccx63
+
+permissions:
+  contents: read
+
+jobs:
+  dev:
+    runs-on: ubuntu-24.04
+    env:
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: inputs.action == 'start'
+        run: |
+          read -r id ip < <(ci/hetzner.sh create graphiteos-dev "${{ inputs.server_type }}" "${{ inputs.hours }}" ci/dev_ssh_key.pub)
+          echo "Dev server: \`ssh root@$ip\` (deleted after ${{ inputs.hours }} h)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - if: inputs.action == 'stop'
+        run: ci/hetzner.sh delete graphiteos-dev

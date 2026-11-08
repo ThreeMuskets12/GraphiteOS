@@ -1,0 +1,37 @@
+name: Watch upstream
+
+# Once a day: if GrapheneOS stable for caiman is newer than our last release, start a release.
+# Disabled until the repository variable AUTO_RELEASE is set to "true".
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  check:
+    if: vars.AUTO_RELEASE == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          stable=$(curl -fsS https://releases.grapheneos.org/caiman-stable | cut -d' ' -f1)
+          latest=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')
+          built=""
+          if [[ -n $latest ]]; then
+            built=$(gh release view "$latest" --json body --jq .body | sed -n 's/^Upstream: GrapheneOS \([0-9]*\).*/\1/p')
+          fi
+          if [[ -n $(gh run list --workflow release.yml --status in_progress --json databaseId --jq '.[]') ]]; then
+            echo "a release is already running"
+          elif [[ -z $built || $stable -gt $built ]]; then
+            echo "GrapheneOS $stable is new (last built: ${built:-none}), starting a release"
+            gh workflow run release.yml -f tag="$stable"
+          else
+            echo "up to date with GrapheneOS $stable"
+          fi

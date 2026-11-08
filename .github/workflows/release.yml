@@ -1,0 +1,117 @@
+name: Release
+
+# Builds, signs and publishes a GraphiteOS release on a temporary Hetzner server.
+# Started by watch-upstream.yml, or by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: GrapheneOS tag to build (blank = current caiman stable)
+        default: ""
+      build_number:
+        description: Build number, only for rebuilding an already released tag (tag + 50..99)
+        default: ""
+      server_type:
+        description: Hetzner server type
+        default: ccx53
+
+concurrency:
+  group: release
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      SERVER: graphiteos-build-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out versions
+        id: v
+        env:
+          TAG_IN: ${{ inputs.tag }}
+          BUILD_NUMBER_IN: ${{ inputs.build_number }}
+        run: ci/resolve-versions.sh | tee -a "$GITHUB_OUTPUT"
+
+      - name: Check that the patches apply
+        run: ci/preflight.sh "${{ steps.v.outputs.tag }}" "${{ steps.v.outputs.prev_tag }}"
+
+      - name: AI review
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python3 ci/ai-review.py work/review | tee work/verdict.json
+          echo "verdict=$(jq -r .verdict work/verdict.json)" >> "$GITHUB_OUTPUT"
+        id: review
+
+      - name: Create draft release
+        run: |
+          {
+            echo "Upstream: GrapheneOS ${{ steps.v.outputs.tag }}"
+            echo
+            echo "AI review (${{ steps.review.outputs.verdict }}): $(jq -r .summary work/verdict.json)"
+            echo
+            echo "First install: download both caiman-install-*.zip.part files, then run"
+            echo '`cat caiman-install-*.zip.part* > caiman-install.zip` and check it against SHA256SUMS.'
+          } > work/notes.md
+          gh release create "${{ steps.v.outputs.build_number }}" --draft \
+            --title "GraphiteOS ${{ steps.v.outputs.build_number }}" --notes-file work/notes.md
+
+      - name: Create build server
+        id: server
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: |
+          ssh-keygen -q -t ed25519 -N "" -f work/id_ed25519
+          read -r id ip < <(ci/hetzner.sh create "$SERVER" "${{ inputs.server_type || 'ccx53' }}" 7 work/id_ed25519.pub)
+          echo "ip=$ip" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          BUILD_NUMBER: ${{ steps.v.outputs.build_number }}
+          PREV_TIMESTAMP: ${{ steps.v.outputs.prev_timestamp }}
+          REPO: ${{ github.repository }}
+          SIGNING_KEYS_TGZ_B64: ${{ secrets.SIGNING_KEYS_TGZ_B64 }}
+          SIGNING_KEYS_PASSPHRASE: ${{ secrets.SIGNING_KEYS_PASSPHRASE }}
+        run: ci/remote-build.sh "${{ steps.server.outputs.ip }}" work/id_ed25519
+
+      - name: Delete build server
+        if: always()
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: ci/hetzner.sh delete "$SERVER"
+
+      - name: Publish
+        if: steps.review.outputs.verdict == 'ok'
+        run: gh release edit "${{ steps.v.outputs.build_number }}" --draft=false --latest
+
+      - name: Ask for a human review
+        if: steps.review.outputs.verdict != 'ok'
+        run: |
+          printf '%s\n\n%s\n\n%s\n' \
+            "The AI review raised a concern, so the release was built but left as a draft:" \
+            "$(jq -r .summary work/verdict.json)" \
+            "Publish it from the Releases page once checked. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            > work/issue.md
+          gh issue create --title "Release ${{ steps.v.outputs.build_number }} is waiting for review" \
+            --body-file work/issue.md
+
+      - name: Report failure
+        if: failure()
+        env:
+          BUILD_NUMBER: ${{ steps.v.outputs.build_number }}
+        run: |
+          if [[ -n $BUILD_NUMBER && $(gh release view "$BUILD_NUMBER" --json isDraft --jq .isDraft 2>/dev/null) == true ]]; then
+            gh release delete "$BUILD_NUMBER" --yes
+          fi
+          gh issue create --title "Release build failed (GrapheneOS ${{ steps.v.outputs.tag }})" \
+            --body "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

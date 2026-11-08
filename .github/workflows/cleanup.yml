@@ -1,0 +1,21 @@
+name: Cleanup
+
+# Safety net: deletes any Hetzner server or SSH key past its expiry label, so a crashed or
+# cancelled workflow can't leave a server billing.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: ci/hetzner.sh delete-expired
