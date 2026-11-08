@@ -1,0 +1,10 @@
+.DS_Store
+# Reference photos stay local
+Reference/
+# Signing keys must never be committed
+keys/
+*.pk8
+*.pem
+*.x509.pem
+avb_pkmd.bin
+*.key
