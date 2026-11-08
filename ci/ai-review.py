@@ -55,14 +55,16 @@ def review(review_dir):
         return {"verdict": "concern", "summary": f"Diff too large to review automatically ({len(material)} chars)."}
 
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
-    response = client.beta.messages.create(
+    # Streamed so the large max_tokens (thinking at high effort needs the room) can't time out
+    with client.beta.messages.stream(
         model=MODEL,
-        max_tokens=16000,
+        max_tokens=64000,
         betas=["server-side-fallback-2026-07-01"],
         extra_body={"fallbacks": "default"},  # re-run on another model if a safety classifier declines
         output_config={"effort": "high", "format": {"type": "json_schema", "schema": SCHEMA}},
         messages=[{"role": "user", "content": PROMPT + "\n\n" + material}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
     if response.stop_reason != "end_turn":
         return {"verdict": "concern", "summary": f"AI review did not finish (stop_reason: {response.stop_reason})."}
     return json.loads(next(b.text for b in response.content if b.type == "text"))
