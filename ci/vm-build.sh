@@ -110,6 +110,9 @@ lunch "$DEVICE-cur-user" > /build/lunch.log 2>&1 || { cat /build/lunch.log; die 
 quiet m m vendorbootimage vendorkernelbootimage target-files-package
 quiet otatools m otatools-package
 set -o nounset
+# The full build leaves ~20 GB free on CCX43, too little for signing; the git history (~85 GB)
+# isn't needed any more
+rm -rf .repo/project-objects
 cmp "$OUT/product/media/bootanimation.zip" "$GRAPHITE/overlay/branding/bootanimation/1280.zip" ||
     die "the build didn't pick up the GraphiteOS boot animation"
 
