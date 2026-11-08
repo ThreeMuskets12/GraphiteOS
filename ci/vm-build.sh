@@ -105,7 +105,9 @@ set +o nounset # envsetup.sh is not nounset-safe
 source build/envsetup.sh
 quiet yarn yarn --cwd vendor/adevtool/ install
 quiet adevtool vendor/adevtool/bin/run generate-all -d "$DEVICE" # `adevtool` is only an alias
-rm -rf out_adevtool_deps vendor/adevtool/dl # ~30 GB of adevtool caches; the disk is tight on CCX43
+# ~30 GB of adevtool caches; the disk is tight on CCX43. The unpacked firmware is read-only.
+chmod -R u+w out_adevtool_deps vendor/adevtool/dl
+rm -rf out_adevtool_deps vendor/adevtool/dl
 lunch "$DEVICE-cur-user" > /build/lunch.log 2>&1 || { cat /build/lunch.log; die "lunch failed"; }
 quiet m m vendorbootimage vendorkernelbootimage target-files-package
 quiet otatools m otatools-package
