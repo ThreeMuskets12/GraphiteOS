@@ -7,7 +7,7 @@
 
 A minimal-diff fork of [GrapheneOS](https://grapheneos.org) for the Pixel 9 Pro (`caiman`).
 
-The only change from GrapheneOS is a display filter. Everything on the built-in screen looks like it is on a color e-ink panel:
+The main change from GrapheneOS is a display filter. Everything on the built-in screen looks like it is on a color e-ink panel:
 
 - warm, desaturated colors
 - a palette of a few hundred colors with 3px ordered dithering
@@ -24,12 +24,18 @@ The filter is skipped while any of these is on screen:
 
 External displays (casting, Android Auto, wired monitors) and screenshots are never filtered.
 
+Two smaller changes:
+
+- Private Space apps can be pinned to the home screen. While Private Space is locked their icons are greyed out, and tapping one asks to unlock it. The icons stay visible while locked, so they reveal that Private Space exists, even with "Hide when locked" on.
+- The backlight can be capped over adb (`maxbrightness` below).
+
 ## What's in here
 
 | Path | What it is |
 |---|---|
 | `patches/frameworks/native/` | The filter. It lives in SurfaceFlinger and RenderEngine; the bypass app lists are in `SurfaceFlinger.cpp`. |
 | `patches/packages/apps/Updater/` | Points the stock Updater at this repo's GitHub releases. |
+| `patches/packages/apps/Launcher3/` | Lets Private Space apps be pinned to the home screen. |
 | `overlay/` | Files that replace upstream files as-is. Currently only the GraphiteOS boot animation (`branding/bootanimation/1280.zip`, the Pixel 9 Pro size). |
 | `assets/` | Brand kit: logos, vector masters, GitHub banners, and the boot animation sources. |
 | `tools/einkfilter.py` | Previews the filter on an image using the same math as the shader. |
@@ -77,3 +83,4 @@ adb shell getprop | grep debug.eink         # show what is set
 | `black` | 0.32 | 0–1 | ink black lightness |
 | `white` | 0.80 | 0–1 | paper white lightness |
 | `fps` | 8 | 1–240 | screen updates per second |
+| `maxbrightness` | unset (no cap) | 0.05–1 | backlight cap, as a fraction of the maximum; applies on the next brightness change (nudge the slider) |

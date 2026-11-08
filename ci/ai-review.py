@@ -19,7 +19,10 @@ GPU composition on the primary display, RenderEngine runs the composited frame t
 shader, and only every ~125 ms (8 fps by default, tunable over adb) is a new frame shown (other frames re-show the last filtered frame),
 while apps keep normal frame pacing. The filter is skipped for listed apps, camera buffers, protected
 content and video from calling apps. Screenshots, virtual and external displays must never be
-filtered. A second patch points the Updater app at the GraphiteOS GitHub releases.
+filtered. Two smaller SurfaceFlinger patches read debug.eink.* properties to tune the filter and to
+cap the backlight in setDisplayBrightness. A Launcher3 patch lets Private Space apps be pinned to the
+home screen (greyed out while locked; tapping one requests unlocking Private Space). A last patch
+points the Updater app at the GraphiteOS GitHub releases.
 
 Below are (1) our patches as they apply to the new GrapheneOS release and (2) the upstream changes
 since our previous release, limited to the files our patches touch. The patches applied without
