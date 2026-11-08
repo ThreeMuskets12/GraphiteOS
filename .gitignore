@@ -8,3 +8,6 @@ keys/
 *.x509.pem
 avb_pkmd.bin
 *.key
+# Public certificates are safe to commit
+!certs/*/*.x509.pem
+!certs/*/avb_pkmd.bin
