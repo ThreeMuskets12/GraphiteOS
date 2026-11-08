@@ -1,0 +1,292 @@
+From 2a89c127ddf1003921c4ec4048ca7cae2f6e22aa Mon Sep 17 00:00:00 2001
+From: ThreeMuskets12 <23061574+ThreeMuskets12@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 11:37:20 -0500
+Subject: [PATCH] GraphiteOS: tune the e-ink look over adb
+
+The e-ink look can be tuned live with debug.eink.* system properties, which the adb shell may
+set on user builds. SurfaceFlinger re-reads them whenever a system property changes and passes
+them to RenderEngine as shader uniforms. Defaults are unchanged, and values reset on reboot.
+
+  adb shell setprop debug.eink.<name> <value>   (empty value = default)
+
+  tones 16, rings 3, hues 12, saturation 0.38, warmth 1, dither 1, cell 2, black 0.32,
+  white 0.92, fps 15
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../include/renderengine/DisplaySettings.h    | 14 +++++
+ libs/renderengine/skia/SkiaRenderEngine.cpp   | 45 ++++++++++------
+ .../CompositionRefreshArgs.h                  |  2 +
+ .../impl/OutputCompositionState.h             |  1 +
+ .../CompositionEngine/src/Output.cpp          |  2 +
+ services/surfaceflinger/SurfaceFlinger.cpp    | 51 +++++++++++++++++--
+ 6 files changed, 97 insertions(+), 18 deletions(-)
+
+diff --git a/libs/renderengine/include/renderengine/DisplaySettings.h b/libs/renderengine/include/renderengine/DisplaySettings.h
+index e8ce17a..a26cf37 100644
+--- a/libs/renderengine/include/renderengine/DisplaySettings.h
++++ b/libs/renderengine/include/renderengine/DisplaySettings.h
+@@ -35,6 +35,19 @@
+ namespace android {
+ namespace renderengine {
+ 
++// GraphiteOS: e-ink look parameters. SurfaceFlinger reads them from debug.eink.* properties.
++struct EinkParams {
++    float tones = 16;         // lightness levels
++    float rings = 3;          // chroma levels besides grey (0 = greyscale)
++    float hues = 12;          // hue directions
++    float saturation = 0.38f; // chroma scale before binning
++    float warmth = 1;         // paper tint scale (0 = neutral grey paper)
++    float dither = 1;         // dither strength, in quantization steps
++    float cell = 2;           // dither pixel size
++    float black = 0.32f;      // OKLab lightness of ink black
++    float white = 0.92f;      // OKLab lightness of paper white
++};
++
+ // DisplaySettings contains the settings that are applicable when drawing all
+ // layers for a given display.
+ struct DisplaySettings {
+@@ -112,6 +125,7 @@ struct DisplaySettings {
+     // layers are not drawn and the last filtered frame is shown again instead.
+     bool einkFilter = false;
+     bool einkHold = false;
++    EinkParams einkParams;
+ };
+ 
+ static inline bool operator==(const DisplaySettings& lhs, const DisplaySettings& rhs) {
+diff --git a/libs/renderengine/skia/SkiaRenderEngine.cpp b/libs/renderengine/skia/SkiaRenderEngine.cpp
+index c1aa3dc..e44ed4a 100644
+--- a/libs/renderengine/skia/SkiaRenderEngine.cpp
++++ b/libs/renderengine/skia/SkiaRenderEngine.cpp
+@@ -858,10 +858,11 @@ void logSettings(const T& t) {
+ }
+ 
+ // GraphiteOS: color e-ink look. Works in OKLab: compresses tone between ink black and warm paper,
+-// desaturates, and bins to 16 tones x 3 chroma rings x 12 hues (~300 colors) with a 2px ordered
+-// dither. Tuned with tools/einkfilter.py; keep the two in sync.
++// desaturates, and bins to tones x chroma rings x hues (default 16 x 3 x 12, ~300 colors) with an
++// ordered dither (default 2px). The uniforms are EinkParams. Tuned with tools/einkfilter.py.
+ const SkString kEinkSkSL(R"(
+     uniform shader img;
++    uniform float tones, rings, hues, saturation, warmth, dither, cell, black, white;
+     float bayer2(float2 a) { a = floor(a); return fract(a.x / 2.0 + a.y * a.y * 0.75); }
+     float bayer8(float2 a) {
+         return (bayer2(0.25 * a) * 0.25 + bayer2(0.5 * a)) * 0.25 + bayer2(a);
+@@ -875,18 +876,21 @@ const SkString kEinkSkSL(R"(
+         float L = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+         float A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+         float B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+-        float n = bayer8(floor(p / 2.0)) - 0.5 + 1.0 / 128.0;
+-        float t = clamp(floor(clamp(L, 0.0, 1.0) * 15.0 + n + 0.5), 0.0, 15.0) / 15.0;
++        float n = (bayer8(floor(p / floor(cell + 0.5))) - 0.5 + 1.0 / 128.0) * dither;
++        float tl = floor(tones + 0.5) - 1.0;
++        float cl = floor(rings + 0.5);
++        float hl = floor(hues + 0.5);
++        float t = clamp(floor(clamp(L, 0.0, 1.0) * tl + n + 0.5), 0.0, tl) / tl;
+         float chroma = length(float2(A, B));
+-        float k = clamp(floor(clamp(chroma * 0.38 / 0.09, 0.0, 1.0) * 3.0 + n + 0.5), 0.0, 3.0) /
+-                3.0 * 0.09;
++        float k = cl > 0.0 ? clamp(floor(clamp(chroma * saturation / 0.09, 0.0, 1.0) * cl + n + 0.5),
++                                   0.0, cl) / cl * 0.09
++                           : 0.0;
+         // atan(0, 0) is undefined on GPUs, and the hue doesn't matter for greys anyway
+-        float h = chroma > 1e-5 ? floor(atan(B, A) / 6.2831853 * 12.0 + 0.5) / 12.0 * 6.2831853
+-                                : 0.0;
++        float h = chroma > 1e-5 ? floor(atan(B, A) / 6.2831853 * hl + 0.5) / hl * 6.2831853 : 0.0;
+         k *= min(1.0, 2.2 * min(t, 1.0 - t) + 0.25);
+-        L = 0.32 + 0.60 * t;
+-        A = k * cos(h) + 0.004 * t;
+-        B = k * sin(h) + 0.020 * t;
++        L = black + (white - black) * t;
++        A = k * cos(h) + 0.004 * warmth * t;
++        B = k * sin(h) + 0.020 * warmth * t;
+         l = L + 0.3963377774 * A + 0.2158037573 * B;
+         m = L - 0.1055613458 * A - 0.0638541728 * B;
+         s = L - 0.0894841775 * A - 1.2914855480 * B;
+@@ -911,7 +915,8 @@ void drawEinkHeldFrame(const sk_sp<SkSurface>& dst, const sk_sp<SkSurface>& held
+ 
+ // GraphiteOS: copies the filtered version of dst into held, then shows held in dst.
+ // Does nothing (dst stays unfiltered) if the shader or the offscreen surface is unavailable.
+-void applyEinkFilter(const sk_sp<SkSurface>& dst, sk_sp<SkSurface>& held) {
++void applyEinkFilter(const sk_sp<SkSurface>& dst, sk_sp<SkSurface>& held,
++                     const EinkParams& params) {
+     static const sk_sp<SkRuntimeEffect> effect = [] {
+         auto [effect, error] = SkRuntimeEffect::MakeForShader(kEinkSkSL);
+         if (!effect) {
+@@ -929,10 +934,20 @@ void applyEinkFilter(const sk_sp<SkSurface>& dst, sk_sp<SkSurface>& held) {
+     if (!held || !composed) {
+         return;
+     }
+-    SkRuntimeEffect::ChildPtr children[] = {composed->makeShader(SkSamplingOptions())};
++    SkRuntimeShaderBuilder builder(effect);
++    builder.child("img") = composed->makeShader(SkSamplingOptions());
++    builder.uniform("tones") = params.tones;
++    builder.uniform("rings") = params.rings;
++    builder.uniform("hues") = params.hues;
++    builder.uniform("saturation") = params.saturation;
++    builder.uniform("warmth") = params.warmth;
++    builder.uniform("dither") = params.dither;
++    builder.uniform("cell") = params.cell;
++    builder.uniform("black") = params.black;
++    builder.uniform("white") = params.white;
+     SkPaint paint;
+     paint.setBlendMode(SkBlendMode::kSrc);
+-    paint.setShader(effect->makeShader(SkData::MakeEmpty(), children));
++    paint.setShader(builder.makeShader(nullptr));
+     held->getCanvas()->drawPaint(paint);
+     drawEinkHeldFrame(dst, held);
+ }
+@@ -1724,7 +1739,7 @@ void SkiaRenderEngine::drawLayersInternal(
+     LOG_THREAD_STATE_AND_CRASH_IF(activeSurface != dstSurface);
+ 
+     if (display.einkFilter && !mInProtectedContext) {
+-        applyEinkFilter(dstSurface, mEinkSurface); // GraphiteOS
++        applyEinkFilter(dstSurface, mEinkSurface, display.einkParams); // GraphiteOS
+     }
+ 
+     auto drawFence = sp<Fence>::make(flushAndSubmit(context, dstSurface));
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h
+index b6cdba6..8371e29 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h
+@@ -26,6 +26,7 @@
+ #include <compositionengine/LayerFE.h>
+ #include <compositionengine/OutputColorSetting.h>
+ #include <math/mat4.h>
++#include <renderengine/DisplaySettings.h>
+ #include <scheduler/interface/ICompositor.h>
+ #include <ui/FenceTime.h>
+ #include <ui/Transform.h>
+@@ -87,6 +88,7 @@ struct CompositionRefreshArgs {
+     // repeats the last filtered frame.
+     const Output* einkOutput = nullptr;
+     bool einkHold = false;
++    renderengine::EinkParams einkParams;
+ 
+     // If set, causes the dirty regions to flash with the delay
+     std::optional<std::chrono::microseconds> devOptFlashDirtyRegionsDelay;
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h
+index bc7cce1..48cb18e 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h
+@@ -71,6 +71,7 @@ struct OutputCompositionState {
+     // GraphiteOS: e-ink filter state for the current frame (see CompositionRefreshArgs)
+     bool einkFilter{false};
+     bool einkHold{false};
++    renderengine::EinkParams einkParams;
+ 
+     // The conditions for including a layer on this output
+     LayerFilter layerFilter;
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index c2fab50..95f5a92 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -888,6 +888,7 @@ void Output::updateCompositionState(const compositionengine::CompositionRefreshA
+     // even if nothing changed since the last held frame.
+     editState().einkFilter = refreshArgs.einkOutput == this;
+     editState().einkHold = getState().einkFilter && refreshArgs.einkHold;
++    editState().einkParams = refreshArgs.einkParams;
+     if (getState().einkFilter && !getState().einkHold) {
+         dirtyEntireOutput();
+     }
+@@ -1562,6 +1563,7 @@ renderengine::DisplaySettings Output::generateClientCompositionDisplaySettings(
+     }
+     clientCompositionDisplay.einkFilter = outputState.einkFilter; // GraphiteOS
+     clientCompositionDisplay.einkHold = outputState.einkHold;     // GraphiteOS
++    clientCompositionDisplay.einkParams = outputState.einkParams; // GraphiteOS
+     return clientCompositionDisplay;
+ }
+ 
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 1246ad6..28ce461 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -27,6 +27,7 @@
+ 
+ #include <aidl/android/hardware/power/Boost.h>
+ #include <android-base/logging.h>
++#include <android-base/parsedouble.h>
+ #include <android-base/parseint.h>
+ #include <android-base/properties.h>
+ #include <android-base/stringprintf.h>
+@@ -90,6 +91,7 @@
+ #include <renderengine/impl/ExternalTexture.h>
+ #include <scheduler/FrameTargeter.h>
+ #include <statslog_surfaceflinger_bootstrap.h>
++#include <sys/system_properties.h>
+ #include <sys/types.h>
+ #include <ui/ColorSpace.h>
+ #include <ui/DebugUtils.h>
+@@ -419,6 +421,47 @@ nsecs_t sEinkLastSample = 0;
+ nsecs_t sEinkPendingRepaint = 0;
+ bool sEinkWasActive = false;
+ 
++// GraphiteOS: e-ink tuning, read whenever a system property changes (main thread only):
++//   adb shell setprop debug.eink.<name> <value>    e.g. debug.eink.dither 1.5
++//   adb shell setprop debug.eink.<name> ''         back to the default
++// Values reset on reboot. Invalid or out-of-range values are ignored.
++struct EinkSettings {
++    renderengine::EinkParams params;
++    float fps = 15;
++};
++
++const EinkSettings& einkSettings() {
++    static EinkSettings settings;
++    static std::optional<uint32_t> serial;
++    const uint32_t current = __system_property_area_serial();
++    if (serial == current) {
++        return settings;
++    }
++    serial = current;
++    settings = {};
++    auto& p = settings.params;
++    const struct {
++        const char* name;
++        float* value;
++        float min, max;
++    } tunables[] = {
++            {"tones", &p.tones, 2, 64},          {"rings", &p.rings, 0, 8},
++            {"hues", &p.hues, 1, 48},            {"saturation", &p.saturation, 0, 3},
++            {"warmth", &p.warmth, 0, 10},        {"dither", &p.dither, 0, 8},
++            {"cell", &p.cell, 1, 16},            {"black", &p.black, 0, 1},
++            {"white", &p.white, 0, 1},           {"fps", &settings.fps, 1, 240},
++    };
++    for (const auto& tunable : tunables) {
++        float value;
++        if (base::ParseFloat(base::GetProperty("debug.eink."s + tunable.name, ""), &value,
++                             tunable.min, tunable.max) &&
++            !std::isnan(value)) {
++            *tunable.value = value;
++        }
++    }
++    return settings;
++}
++
+ // GraphiteOS: apps shown unfiltered whenever they are on screen (photo and camera apps).
+ constexpr std::string_view kEinkBypassApps[] = {
+         "com.google.android.apps.photos", "io.ente.photos", "io.ente.photos.fdroid",
+@@ -3470,16 +3513,18 @@ CompositeResultsPerDisplay SurfaceFlinger::composite(
+         }
+     }
+     if (refreshArgs.einkOutput) {
+-        constexpr nsecs_t kEinkPeriod = 1'000'000'000 / 15;
++        const EinkSettings& settings = einkSettings();
++        refreshArgs.einkParams = settings.params;
++        const nsecs_t einkPeriod = static_cast<nsecs_t>(1e9f / settings.fps);
+         const nsecs_t elapsed = presentTime - sEinkLastSample;
+         refreshArgs.einkHold = sEinkWasActive &&
+-                elapsed < kEinkPeriod - refreshArgs.frameInterval.getPeriodNsecs() / 2;
++                elapsed < einkPeriod - refreshArgs.frameInterval.getPeriodNsecs() / 2;
+         if (!refreshArgs.einkHold) {
+             sEinkLastSample = presentTime;
+         } else if (sEinkPendingRepaint != sEinkLastSample) {
+             // Make sure whatever changed during the hold is shown once the next frame is due.
+             sEinkPendingRepaint = sEinkLastSample;
+-            forceFutureUpdate(static_cast<int>(ns2ms(kEinkPeriod - elapsed)) + 1);
++            forceFutureUpdate(static_cast<int>(ns2ms(einkPeriod - elapsed)) + 1);
+         }
+     }
+     sEinkWasActive = refreshArgs.einkOutput != nullptr;
+-- 
+2.50.1 (Apple Git-155)
+

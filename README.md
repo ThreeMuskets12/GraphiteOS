@@ -56,3 +56,24 @@ Toggle the filter for testing (not persistent, adb only):
 adb shell service call SurfaceFlinger 1999 i32 0   # off
 adb shell service call SurfaceFlinger 1999 i32 1   # on
 ```
+
+Tune the look live (adb only, resets on reboot; an empty value restores the default). Changes show on the next screen update.
+
+```
+adb shell setprop debug.eink.dither 1.5     # set one value
+adb shell setprop debug.eink.dither ''      # back to the default
+adb shell getprop | grep debug.eink         # show what is set
+```
+
+| Property | Default | Range | Effect |
+|---|---|---|---|
+| `tones` | 16 | 2–64 | lightness levels |
+| `rings` | 3 | 0–8 | color strength levels (0 = greyscale) |
+| `hues` | 12 | 1–48 | hue directions |
+| `saturation` | 0.38 | 0–3 | how much of the original color is kept |
+| `warmth` | 1 | 0–10 | paper tint (0 = neutral grey) |
+| `dither` | 1 | 0–8 | dither strength (0 = flat bands) |
+| `cell` | 2 | 1–16 | dither pixel size |
+| `black` | 0.32 | 0–1 | ink black lightness |
+| `white` | 0.92 | 0–1 | paper white lightness |
+| `fps` | 15 | 1–240 | screen updates per second |
