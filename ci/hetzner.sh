@@ -3,6 +3,7 @@
 #
 #   ci/hetzner.sh create NAME SERVER_TYPE HOURS PUBKEY_FILE   -> prints "SERVER_ID IP"
 #   ci/hetzner.sh delete NAME                                  (server and its SSH key)
+#   ci/hetzner.sh extend NAME HOURS                            (expire HOURS from now)
 #   ci/hetzner.sh delete-expired                               (everything past its expiry label)
 #
 # Every resource gets the labels graphiteos=1 and expires=<unix time>, so the scheduled
@@ -55,6 +56,15 @@ create)
     ;;
 delete)
     delete_by_name "$2"
+    ;;
+extend)
+    expires=$(( $(date +%s) + $3 * 3600 ))
+    labels=$(jq -n --arg e "$expires" '{labels: {graphiteos: "1", expires: $e}}')
+    for kind in servers ssh_keys; do
+        id=$(api GET "/$kind?name=$2" | jq -r ".${kind}[0].id // empty")
+        [[ -n $id ]] && api PUT "/$kind/$id" "$labels" >/dev/null
+    done
+    echo "$2 now expires at $(date -u -d "@$expires" 2>/dev/null || date -u -r "$expires")"
     ;;
 delete-expired)
     now=$(date +%s)

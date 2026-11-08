@@ -8,10 +8,10 @@ on:
     inputs:
       action:
         type: choice
-        options: [start, stop]
+        options: [start, stop, extend]
         default: start
       hours:
-        description: Delete automatically after this many hours
+        description: Delete automatically after this many hours (from now, for start and extend)
         default: "6"
       server_type:
         description: Hetzner server type
@@ -33,3 +33,5 @@ jobs:
           echo "Dev server: \`ssh root@$ip\` (deleted after ${{ inputs.hours }} h)" | tee -a "$GITHUB_STEP_SUMMARY"
       - if: inputs.action == 'stop'
         run: ci/hetzner.sh delete graphiteos-dev
+      - if: inputs.action == 'extend'
+        run: ci/hetzner.sh extend graphiteos-dev "${{ inputs.hours }}" | tee -a "$GITHUB_STEP_SUMMARY"
