@@ -15,7 +15,7 @@ on:
         default: "6"
       server_type:
         description: Hetzner server type
-        default: ccx63
+        default: ccx43
 
 permissions:
   contents: read

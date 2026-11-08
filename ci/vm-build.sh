@@ -60,11 +60,12 @@ git config --global user.email graphiteos@localhost
 git config --global color.ui false
 
 log "syncing GrapheneOS $TAG"
-quiet repo-init repo init -u https://github.com/GrapheneOS/platform_manifest.git -b "refs/tags/$TAG" --depth=1
+quiet repo-init repo init -u https://github.com/GrapheneOS/platform_manifest.git -b "refs/tags/$TAG"
 curl -fsS https://grapheneos.org/allowed_signers > ~/grapheneos_allowed_signers
 git -C .repo/manifests config gpg.ssh.allowedSignersFile ~/grapheneos_allowed_signers
 git -C .repo/manifests verify-tag "$(git -C .repo/manifests describe)" || die "manifest tag signature check failed"
-# Google's source servers rate limit parallel fetches (RESOURCE_EXHAUSTED), so stay gentle and
+# Standard sync (not --depth=1: after a failed fetch repo silently falls back to full history,
+# which overflows the disk). Google rate limits parallel fetches (RESOURCE_EXHAUSTED), so stay gentle and
 # back off; each retry only fetches what is still missing.
 for attempt in 1 2 3 4 5 6; do
     repo sync -c -j4 --no-tags > /build/repo-sync.log 2>&1 && break

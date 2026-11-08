@@ -14,7 +14,7 @@ on:
         default: ""
       server_type:
         description: Hetzner server type
-        default: ccx53
+        default: ccx43
 
 concurrency:
   group: release
@@ -71,7 +71,7 @@ jobs:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
         run: |
           ssh-keygen -q -t ed25519 -N "" -f work/id_ed25519
-          read -r id ip < <(ci/hetzner.sh create "$SERVER" "${{ inputs.server_type || 'ccx53' }}" 7 work/id_ed25519.pub)
+          read -r id ip < <(ci/hetzner.sh create "$SERVER" "${{ inputs.server_type || 'ccx43' }}" 7 work/id_ed25519.pub)
           echo "ip=$ip" >> "$GITHUB_OUTPUT"
 
       - name: Build
