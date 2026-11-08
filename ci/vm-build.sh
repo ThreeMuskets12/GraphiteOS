@@ -64,10 +64,13 @@ quiet repo-init repo init -u https://github.com/GrapheneOS/platform_manifest.git
 curl -fsS https://grapheneos.org/allowed_signers > ~/grapheneos_allowed_signers
 git -C .repo/manifests config gpg.ssh.allowedSignersFile ~/grapheneos_allowed_signers
 git -C .repo/manifests verify-tag "$(git -C .repo/manifests describe)" || die "manifest tag signature check failed"
-for attempt in 1 2 3; do
-    repo sync -c -j"$(nproc)" --no-tags --fail-fast > /build/repo-sync.log 2>&1 && break
-    [[ $attempt == 3 ]] && { tail -n 150 /build/repo-sync.log; die "repo sync failed"; }
+# Google's source servers rate limit parallel fetches (RESOURCE_EXHAUSTED), so stay gentle and
+# back off; each retry only fetches what is still missing.
+for attempt in 1 2 3 4 5 6; do
+    repo sync -c -j4 --no-tags > /build/repo-sync.log 2>&1 && break
+    [[ $attempt == 6 ]] && { tail -n 150 /build/repo-sync.log; die "repo sync failed"; }
     log "repo sync failed, retrying"
+    sleep $((attempt * 120))
 done
 
 log "applying GraphiteOS patches"
