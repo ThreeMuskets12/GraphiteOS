@@ -46,10 +46,15 @@ SCHEMA = {
 def review(review_dir):
     parts = [f"===== {p.name} =====\n{p.read_text(errors='replace')}"
              for p in sorted(pathlib.Path(review_dir).glob("*.diff"))]
-    if not any(pathlib.Path(review_dir).glob("upstream-*.diff")):
+    upstream = list(pathlib.Path(review_dir).glob("upstream-*.diff"))
+    if not upstream:
         parts.insert(0, "(2) is absent because this is the first GraphiteOS release: there is no previous "
                         "release, and the patches were written against this exact upstream revision. "
                         "Review the patches themselves.")
+    elif not any(p.read_text(errors="replace").strip() for p in upstream):
+        parts.insert(0, "(2) is empty because upstream changed none of the files our patches touch since "
+                        "our previous release (for example, a rebuild of the same GrapheneOS release with "
+                        "updated patches). Review the patches themselves.")
     material = "\n\n".join(parts)
     if len(material) > MAX_CHARS:
         return {"verdict": "concern", "summary": f"Diff too large to review automatically ({len(material)} chars)."}
