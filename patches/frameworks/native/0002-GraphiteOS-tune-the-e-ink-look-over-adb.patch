@@ -34,13 +34,13 @@ index e8ce17a..a26cf37 100644
 +struct EinkParams {
 +    float tones = 16;         // lightness levels
 +    float rings = 3;          // chroma levels besides grey (0 = greyscale)
-+    float hues = 12;          // hue directions
-+    float saturation = 0.38f; // chroma scale before binning
-+    float warmth = 1;         // paper tint scale (0 = neutral grey paper)
-+    float dither = 1;         // dither strength, in quantization steps
-+    float cell = 2;           // dither pixel size
++    float hues = 8;           // hue directions
++    float saturation = 0.25f; // chroma scale before binning
++    float warmth = 3;         // paper tint scale (0 = neutral grey paper)
++    float dither = 4;         // dither strength, in quantization steps
++    float cell = 3;           // dither pixel size
 +    float black = 0.32f;      // OKLab lightness of ink black
-+    float white = 0.92f;      // OKLab lightness of paper white
++    float white = 0.80f;      // OKLab lightness of paper white
 +};
 +
  // DisplaySettings contains the settings that are applicable when drawing all
@@ -227,7 +227,7 @@ index 1246ad6..28ce461 100644
 +// Values reset on reboot. Invalid or out-of-range values are ignored.
 +struct EinkSettings {
 +    renderengine::EinkParams params;
-+    float fps = 15;
++    float fps = 8;
 +};
 +
 +const EinkSettings& einkSettings() {

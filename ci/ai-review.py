@@ -16,7 +16,7 @@ MAX_CHARS = 600_000
 PROMPT = """You are reviewing an automated release of GraphiteOS, a minimal fork of GrapheneOS for the
 Pixel 9 Pro. The fork's patches give the built-in display a color e-ink look: SurfaceFlinger forces
 GPU composition on the primary display, RenderEngine runs the composited frame through an SkSL
-shader, and only every ~66 ms is a new frame shown (other frames re-show the last filtered frame),
+shader, and only every ~125 ms (8 fps by default, tunable over adb) is a new frame shown (other frames re-show the last filtered frame),
 while apps keep normal frame pacing. The filter is skipped for listed apps, camera buffers, protected
 content and video from calling apps. Screenshots, virtual and external displays must never be
 filtered. A second patch points the Updater app at the GraphiteOS GitHub releases.

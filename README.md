@@ -10,8 +10,8 @@ A minimal-diff fork of [GrapheneOS](https://grapheneos.org) for the Pixel 9 Pro 
 The only change from GrapheneOS is a display filter. Everything on the built-in screen looks like it is on a color e-ink panel:
 
 - warm, desaturated colors
-- a palette of about 300 colors with 2px ordered dithering
-- a new frame shown about 15 times per second
+- a palette of a few hundred colors with 3px ordered dithering
+- a new frame shown 8 times per second
 
 Apps can't tell the filter is there. They render and present frames at the normal rate.
 
@@ -69,11 +69,11 @@ adb shell getprop | grep debug.eink         # show what is set
 |---|---|---|---|
 | `tones` | 16 | 2–64 | lightness levels |
 | `rings` | 3 | 0–8 | color strength levels (0 = greyscale) |
-| `hues` | 12 | 1–48 | hue directions |
-| `saturation` | 0.38 | 0–3 | how much of the original color is kept |
-| `warmth` | 1 | 0–10 | paper tint (0 = neutral grey) |
-| `dither` | 1 | 0–8 | dither strength (0 = flat bands) |
-| `cell` | 2 | 1–16 | dither pixel size |
+| `hues` | 8 | 1–48 | hue directions |
+| `saturation` | 0.25 | 0–3 | how much of the original color is kept |
+| `warmth` | 3 | 0–10 | paper tint (0 = neutral grey) |
+| `dither` | 4 | 0–8 | dither strength (0 = flat bands) |
+| `cell` | 3 | 1–16 | dither pixel size |
 | `black` | 0.32 | 0–1 | ink black lightness |
-| `white` | 0.92 | 0–1 | paper white lightness |
-| `fps` | 15 | 1–240 | screen updates per second |
+| `white` | 0.80 | 0–1 | paper white lightness |
+| `fps` | 8 | 1–240 | screen updates per second |
