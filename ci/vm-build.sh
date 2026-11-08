@@ -32,6 +32,9 @@ if [[ ${1:-} != --as-build ]]; then
     (cd /tmp && curl -fsS "$node_dist/SHASUMS256.txt" | grep " $node_tar\$" | sha256sum -c --quiet -)
     tar -xJf "/tmp/$node_tar" -C /usr/local --strip-components=1
     quiet npm npm install -g yarn
+    # The build sandbox (nsjail) needs unprivileged user namespaces, which Ubuntu 24.04 restricts;
+    # without it the build prints a warning that makes adevtool fail.
+    sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0
 
     id build &>/dev/null || useradd -m -s /bin/bash build
     mkdir -p "$SRC"
