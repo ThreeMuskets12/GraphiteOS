@@ -203,7 +203,8 @@ The values can't be read back.
   back to the full OTA. It waits while the battery is low.
 - OTAs install to the inactive A/B slot. If a build won't boot, the phone falls back to the
   previous slot.
-- **Locked with our AVB key** (`fastboot flash avb_custom_key avb_pkmd.bin` must come first):
+- **The owner's phone is locked with our AVB key** (since 2026-11; `fastboot flash avb_custom_key
+  avb_pkmd.bin` must come before any lock):
   - The boot screen is yellow ("different operating system") with an ID starting `92D45C17`,
     the start of the SHA-256 of `certs/caiman/avb_pkmd.bin`.
   - Play Integrity tops out at basic integrity, the same as on GrapheneOS.
